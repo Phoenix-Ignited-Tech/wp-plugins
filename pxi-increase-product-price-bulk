@@ -1,0 +1,138 @@
+<?php
+/*
+Plugin Name: PXI Increase Product Price in Bulk (Direct SQL with Advanced Logging)
+Description: This plugin increases the price of products owned by a specific user that are not categorized and assigns them to the sub-sub-sub-category 'Fine Jewelry'.
+Author: Phoenix Ignited Tech
+Version: 2.3
+*/
+
+global $wpdb;
+
+// Hook into plugin activation
+register_activation_hook(__FILE__, 'pxi_schedule_bulk_price_update');
+
+// Schedule the cron job to run 20 seconds after activation
+function pxi_schedule_bulk_price_update() {
+    if (!wp_next_scheduled('pxi_bulk_price_update_cron')) {
+        wp_schedule_single_event(time() + 20, 'pxi_bulk_price_update_cron');
+        error_log("[INFO] Scheduled bulk price update.");
+    } else {
+        error_log("[INFO] Bulk price update cron already scheduled.");
+    }
+}
+
+// Hook the function into the scheduled cron event
+add_action('pxi_bulk_price_update_cron', 'pxi_increase_price_and_categorize_in_bulk');
+
+function pxi_increase_price_and_categorize_in_bulk($paged = 1) {
+    global $wpdb;
+
+    // The user ID you want to target
+    $user_id = <user_id>; // Replace with the actual user ID
+
+    // The category IDs for multiple categories (including Fine Jewelry)
+    $category_ids = array(<cat_id1>, <cat_id2>, <cat_id3>); // Replace these with your actual category IDs
+
+    // The category ID for 'Uncategorized'
+    $uncategorized_category_id = 15; // Confirm the 'Uncategorized' ID in your install
+
+    // Limit for pagination
+    $limit = 100;
+
+    // Retrieve all uncategorized product IDs owned by the user
+    $all_product_ids = $wpdb->get_col($wpdb->prepare("
+        SELECT p.ID 
+        FROM {$wpdb->prefix}posts AS p
+        LEFT JOIN {$wpdb->prefix}term_relationships AS tr ON (p.ID = tr.object_id)
+        LEFT JOIN {$wpdb->prefix}term_taxonomy AS tt ON (tr.term_taxonomy_id = tt.term_taxonomy_id)
+        WHERE p.post_type = 'product' 
+        AND p.post_author = %d
+        AND tt.term_id = %d
+        AND p.post_status = 'publish'
+    ", $user_id, $uncategorized_category_id));
+
+    // If there are no products, log and exit
+    if (empty($all_product_ids)) {
+        error_log("[INFO] No uncategorized products found for processing.");
+        return;
+    }
+
+    // Split product IDs into chunks for processing
+    $total_products = count($all_product_ids);
+    $chunks = array_chunk($all_product_ids, $limit);
+
+    if (isset($chunks[$paged - 1])) {
+        $product_ids = $chunks[$paged - 1];
+        error_log("[INFO] Processing page $paged, found products: " . count($product_ids));
+
+        foreach ($product_ids as $product_id) {
+            error_log("[INFO] Processing product ID: " . $product_id);
+
+            // Get current product price
+            $price = get_post_meta($product_id, '_regular_price', true);
+
+            if ($price !== false) {
+                try {
+                    // Cast the price to a float before multiplying
+                    $new_price = (float) $price * 1.5;
+                    $updated_price = update_post_meta($product_id, '_regular_price', $new_price);
+                    $updated_price_meta = update_post_meta($product_id, '_price', $new_price);
+
+                    if ($updated_price && $updated_price_meta) {
+                        error_log("[SUCCESS] Updated price for product ID: $product_id to $new_price");
+                    } else {
+                        error_log("[ERROR] Failed to update price for product ID: $product_id");
+                    }
+                } catch (Exception $e) {
+                    error_log("[EXCEPTION] Error updating price for product ID: $product_id - " . $e->getMessage());
+                }
+            } else {
+                error_log("[WARNING] No price found for product ID: $product_id, skipping.");
+            }
+
+            // Assign the product to the specified categories
+            try {
+                $assigned = wp_set_post_terms($product_id, $category_ids, 'product_cat');
+                if (is_wp_error($assigned)) {
+                    error_log("[ERROR] Failed to assign categories to product ID: $product_id - " . $assigned->get_error_message());
+                } else {
+                    error_log("[SUCCESS] Assigned categories for product ID: $product_id");
+                }
+            } catch (Exception $e) {
+                error_log("[EXCEPTION] Error assigning categories for product ID: $product_id - " . $e->getMessage());
+            }
+        }
+
+        // Schedule next batch if there are more products to process
+        $total_pages = count($chunks);
+
+        if ($paged < $total_pages) {
+            error_log("[INFO] Scheduling next batch for page " . ($paged + 1));
+            wp_schedule_single_event(time() + 20, 'pxi_bulk_price_update_cron', array($paged + 1));
+        } else {
+            error_log("[INFO] Bulk price update: Completed all pages.");
+        }
+    } else {
+        error_log("[INFO] No more products found to update on page $paged.");
+    }
+}
+
+// Cleanup scheduled event on plugin deactivation
+register_deactivation_hook(__FILE__, 'pxi_clear_scheduled_event');
+function pxi_clear_scheduled_event() {
+    $timestamp = wp_next_scheduled('pxi_bulk_price_update_cron');
+    if ($timestamp) {
+        wp_unschedule_event($timestamp, 'pxi_bulk_price_update_cron');
+        error_log("[INFO] Cleared scheduled bulk price update.");
+    }
+}
+
+// Add a manual execution link for testing (optional, remove after testing)
+add_action('admin_init', 'pxi_run_bulk_update_manually');
+function pxi_run_bulk_update_manually() {
+    if (isset($_GET['run_bulk_update'])) {
+        error_log("[INFO] Manually triggered bulk update.");
+        pxi_increase_price_and_categorize_in_bulk(1); // Start on page 1
+        wp_die('Bulk update started.');
+    }
+}
