@@ -1,0 +1,1 @@
+This plugin file very simply collects all products by user_id and that are EXCLUSIVELY in the uncategorized category in wordpress and multiplies the price by a set value. Helpful in random situations as a wordpress admin
